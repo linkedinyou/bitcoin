@@ -1107,7 +1107,7 @@ Value listtransactions(const Array& params, bool fHelp)
         }
         // ret is now newest to oldest
     }
-    
+
     // Make sure we return only last nCount items (sends-to-self might give us an extra):
     if (ret.size() > nCount)
     {
@@ -1251,6 +1251,371 @@ Value validateaddress(const Array& params, bool fHelp)
         }
     }
     return ret;
+}
+
+Value importprivkey(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "importprivkey <bitcoinprivkey>\n"
+            "Adds a private key (as returned by dumpprivkey) to your wallet.");
+
+    string secret = params[0].get_str();
+    uint256 privKey;
+    bool good = SecretToPrivKey(secret,privKey);
+
+    if (!good) throw JSONRPCError(-5,"Invalid private key");
+
+    CKey key;
+    key.SetPrivKeyInner(privKey);
+    vector<unsigned char> pubKey=key.GetPubKey();
+    string strAddress=PubKeyToAddress(pubKey);
+    string strAccount="imported";
+    SetAddressBookName(strAddress, strAccount);
+
+    if (!AddKey(key))
+        throw JSONRPCError(-4,"Error adding key to wallet");
+
+    ScanForWalletTransactions(pindexGenesisBlock);
+    ReacceptWalletTransactions();
+
+#ifdef GUI
+    MainWindowRefresh();
+#endif
+
+    return Value::null;
+}
+
+int RetrieveSecret(const uint160 &address, uint256 &privKey)
+{
+    if (mapPubKeys.count(address))
+    {
+        vector<unsigned char> &pubKey = mapPubKeys[address];
+        if (mapKeys.count(pubKey))
+        {
+            CPrivKey &cp = mapKeys[pubKey];
+            CKey key;
+            key.SetPrivKey(cp);
+            privKey = key.GetPrivKeyInner();
+            return 0;
+        }
+        return -1;
+    }
+    return -2;
+}
+
+Value dumpprivkey(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "dumpprivkey <bitcoinaddress>\n"
+            "Reveals the private key corresponding to <bitcoinaddress>.");
+
+    string addr = params[0].get_str();
+    uint160 address;
+    bool good = AddressToHash160(addr,address);
+    if (good<0)
+        throw JSONRPCError(-5, "Invalid bitcoin address");
+    uint256 privKey;
+    int ok = RetrieveSecret(address,privKey);
+    if (ok<0)
+        throw JSONRPCError(-4,"Private key for address " + addr + " is not known");
+    string secret = PrivKeyToSecret(privKey);
+    return secret;
+}
+
+string QuoteEscapeString(const string& strString)
+{
+    int nQuotes = 0;
+    for (int i=0; i<strString.length(); i++)
+    {
+        if (strString[i] == '"')
+            nQuotes++;
+    }
+    string strReturn;
+    strReturn.resize(strString.length() + nQuotes + 2);
+    strReturn[0] = '"';
+    int nPos = 1;
+    for (int i=0; i<strString.length(); i++)
+    {
+        if (strString[i] == '"')
+        {
+            strReturn[nPos++] = '"';
+            strReturn[nPos++] = '"';
+        }
+        else
+            strReturn[nPos++] = strString[i];
+    }
+    strReturn[nPos] = '"';
+    return strReturn;
+}
+
+string ParseCSVItem(istream &source, bool &fEndLine)
+{
+    // skip initial white space
+    while (!source.eof() && isspace(source.peek()))
+        source.get();
+
+    // return string
+    string strRet = "";
+
+    // empty case
+    if (source.eof())
+    {
+        fEndLine = true;
+        return strRet;
+    }
+
+    // ""-enclosed part
+    if (source.peek() == '"')
+    {
+        source.get();
+        while (!source.eof())
+        {
+            int cGot = source.get();
+            if (cGot == '"')
+            {
+                // double "" inside: single encoded '"'
+                if (source.peek() == '"')
+                {
+                    source.get();
+                    strRet += '"';
+                }
+                else
+                    break;
+            }
+            else
+                strRet += (char)cGot;
+        }
+    }
+
+
+    while (!source.eof())
+    {
+        int cGot = source.get();
+        // error or end of line
+        if (cGot == '\n' || cGot<0)
+        {
+            fEndLine = true;
+            return strRet;
+        }
+
+        // comments
+        if (cGot == '#')
+        {
+            while (!source.eof() && source.get() != '\n');
+            fEndLine = true;
+            return strRet;
+        }
+
+        // comma for separation
+        if (cGot == ',')
+        {
+            return strRet;
+        }
+
+        // other characters
+        strRet += (char)cGot;
+    }
+
+    fEndLine = true;
+    return strRet;
+}
+
+bool ParseWalletDumpLine(istream &source, uint256 &privKey, int &nHeight, bool &fReserve, bool &fLabelled, string &strLabel)
+{
+    bool fEndLine = false;
+
+    string strPrivKey = ParseCSVItem(source, fEndLine);
+    if (fEndLine)
+        return false;
+    string strHeight = ParseCSVItem(source, fEndLine);
+    string strFlags = fEndLine ? "-" : ParseCSVItem(source, fEndLine);
+    strLabel = fEndLine ? "" : ParseCSVItem(source, fEndLine);
+    
+    if (!SecretToPrivKey(strPrivKey, privKey))
+        return false;
+
+    nHeight = atoi(strHeight);
+
+    foreach (char c, strFlags)
+    {
+        if (c == 'R')
+            fReserve = true;
+
+        if (c == 'L')
+            fLabelled = true;
+    }
+
+    return true;
+}
+
+string FormatWalletDumpLine(const uint256 &privKey, int nHeight, bool fReserve, const uint160 &address, bool fUsed, int64 nAmount)
+{
+    string *label = NULL;
+    string strPrivKey = PrivKeyToSecret(privKey);
+    if (nHeight < 0)
+        nHeight = pindexBest->nHeight;
+    if (fReserve)
+    {
+       return strprintf("%s,%i,R\n",strPrivKey.c_str(),nHeight);
+    }
+    else
+    {
+        string strComment;
+        string strAddress = Hash160ToAddress(address);
+        label = mapAddressBook.count(strAddress) ? &mapAddressBook[strAddress] : NULL;
+        if (fUsed)
+            strComment = strprintf("%s (%s BTC)",strAddress.c_str(),FormatMoney(nAmount).c_str());
+        else
+            strComment = strprintf("%s (unused)",strAddress.c_str());
+        string strFlags   = fReserve ? "R" : (label ? "L" : "-");
+        if (label)
+            return strprintf("# %s\n%s,%i,%s,%s\n",strComment.c_str(),strPrivKey.c_str(),nHeight,strFlags.c_str(),QuoteEscapeString(*label).c_str());
+        else
+            return strprintf("# %s\n%s,%i,%s\n",strComment.c_str(),strPrivKey.c_str(),nHeight,strFlags.c_str());
+    }
+}
+
+Value importwallet(const Array& params, bool fHelp)
+{
+    // keys that need to be verified whether they're actually used or not
+    set<uint160> setReserve;
+
+    // minimum encountered height
+    int nMinHeight = pindexBest->nHeight;
+
+    ifstream myfile;
+    myfile.open("wallet.dump");
+    uint256 privKey;
+    string strLabel;
+
+    // loop over lines in file
+    while (!myfile.eof())
+    {
+        int nHeight = 0;
+        bool fReserve = false;
+        bool fLabelled = false;
+        bool fOk = ParseWalletDumpLine(myfile, privKey, nHeight, fReserve, fLabelled, strLabel);
+
+        // reserve keys are not yet support
+        if (fReserve)
+            continue;
+
+        if (fOk)
+        {
+            CKey key;
+            key.SetPrivKeyInner(privKey);
+            AddKey(key);
+            if (nHeight < nMinHeight)
+                nMinHeight = nHeight;
+            if (fReserve)
+                setReserve.insert(Hash160(key.GetPubKey()));
+            if (fLabelled)
+            {
+                string strAddress=PubKeyToAddress(key.GetPubKey());
+                SetAddressBookName(strAddress, strLabel);
+            }
+        }
+    }
+
+    myfile.close();
+
+    CBlockIndex *pindexRescan = pindexBest;
+    while (pindexRescan->nHeight > nMinHeight && pindexRescan->pprev)
+        pindexRescan = pindexRescan->pprev;
+
+    ScanForWalletTransactions(pindexRescan);
+    ReacceptWalletTransactions();
+
+#ifdef GUI
+    MainWindowRefresh();
+#endif
+
+    return Value::null;
+}
+
+
+Value dumpwallet(const Array& params, bool fHelp)
+{
+    set<uint256> setReserves;
+    map<uint160,uint256> mapSecrets;
+    map<uint160,pair<uint256,pair<int64,int> > > mapAvail; // maps addresses to amounts available.
+    CRITICAL_BLOCK(cs_main)
+    CRITICAL_BLOCK(cs_mapKeys)
+    {
+        for (map<vector<unsigned char>, CPrivKey>::iterator it = mapKeys.begin(); it != mapKeys.end(); ++it)
+        {
+            CKey key;
+            key.SetPrivKey((*it).second);
+            mapSecrets[Hash160((*it).first)]=key.GetPrivKeyInner();
+        }
+        for (map<uint256, CWalletTx>::iterator it = mapWallet.begin(); it != mapWallet.end(); ++it)
+        {
+            CWalletTx &coin=(*it).second;
+            int height = pindexBest->nHeight + 1 - max(coin.GetDepthInMainChain(),1);
+            //cout << "coin " << coin.GetHash().GetHex() << endl;
+            for (int i=0; i < coin.vout.size(); i++) 
+            {
+                CTxOut &out = coin.vout[i];
+                int64 credit = out.GetCredit();
+                int oHeight = credit>0 ? height : pindexBest->nHeight;
+                if (coin.IsSpent(i))
+                    credit = 0;
+                uint160 hash160 = 0;
+                vector<unsigned char> vchPubKey;
+                if (ExtractHash160(out.scriptPubKey, hash160))
+                    true;
+                else if (ExtractPubKey(out.scriptPubKey, false, vchPubKey))
+                    hash160 = Hash160(vchPubKey);
+
+                if (mapAvail.count(hash160)>0)
+                {
+                    mapAvail[hash160].second.first += credit;
+                    if (mapAvail[hash160].second.second > oHeight)
+                        mapAvail[hash160].second.second = oHeight;
+                } else {
+                    if (mapSecrets.count(hash160)>0)
+                    {
+                        mapAvail[hash160]=make_pair(mapSecrets[hash160],make_pair(credit,oHeight));
+                        mapSecrets.erase(hash160);
+                    }
+                }
+            }
+        }
+
+        set<uint160> reserveKeys;
+        CWalletDB wallet;
+        wallet.GetAllReserveKeys(reserveKeys);
+        foreach (const uint160& key, reserveKeys)
+        {
+             if (mapSecrets.count(key))
+             {
+                 setReserves.insert(mapSecrets[key]);
+                 mapSecrets.erase(key);
+             }
+        }
+    }
+
+    ofstream myfile;
+    myfile.open("wallet.dump");
+    uint160 dummy;
+    for (map<uint160,pair<uint256,pair<int64,int> > >::iterator it = mapAvail.begin(); it != mapAvail.end(); ++it)
+    {
+        myfile << FormatWalletDumpLine((*it).second.first,(*it).second.second.second,false,(*it).first,true,(*it).second.second.first) << endl;
+    }
+    for (map<uint160,uint256>::iterator it = mapSecrets.begin(); it != mapSecrets.end(); ++it)
+    {
+        myfile << FormatWalletDumpLine((*it).second,-1,false,(*it).first,false,0) << endl;
+    }
+    if (setReserves.size() > 0)
+        myfile << "# reserve keys\n";
+    foreach (const uint256& key, setReserves) 
+    {
+        myfile << FormatWalletDumpLine(key,-1,true,dummy,false,0);
+    }
+    myfile.close();
+    return Value::null;
 }
 
 
@@ -1412,6 +1777,10 @@ pair<string, rpcfn_type> pCallTable[] =
     make_pair("listtransactions",      &listtransactions),
     make_pair("getwork",               &getwork),
     make_pair("listaccounts",          &listaccounts),
+    make_pair("importprivkey",         &importprivkey),
+    make_pair("dumpprivkey",           &dumpprivkey),
+    make_pair("dumpwallet",            &dumpwallet),
+    make_pair("importwallet",          &importwallet),
 };
 map<string, rpcfn_type> mapCallTable(pCallTable, pCallTable + sizeof(pCallTable)/sizeof(pCallTable[0]));
 

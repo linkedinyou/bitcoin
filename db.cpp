@@ -946,6 +946,23 @@ void BackupWallet(const string& strDest)
     }
 }
 
+void CWalletDB::GetAllReserveKeys(set<uint160>& keys)
+{
+    keys.clear();
+
+    CRITICAL_BLOCK(cs_main)
+    CRITICAL_BLOCK(cs_setKeyPool)
+    foreach (const int64& id, setKeyPool)
+    {
+        CKeyPool keypool;
+        if (!Read(make_pair(string("pool"), id), keypool))
+            throw runtime_error("GetAllReserveKeys() : read failed");
+        if (!mapKeys.count(keypool.vchPubKey))
+            throw runtime_error("GetAllReserveKeys() : unknown key in key pool");
+        assert(!keypool.vchPubKey.empty());
+        keys.insert(Hash160(keypool.vchPubKey));
+    }
+}
 
 void CWalletDB::ReserveKeyFromKeyPool(int64& nIndex, CKeyPool& keypool)
 {

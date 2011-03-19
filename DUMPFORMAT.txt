@@ -1,0 +1,56 @@
+1. THE FORMAT
+=============
+
+A wallet dump is a JSON formatted file, with the following definition:
+
+top_level :: lift of key_entry
+
+key_entry :: object {
+  priv :: string          // private key in base58+crc format
+  addr :: string          // address in base58+crc format (verified on input, but ignored)
+  label :: string         // label/account name for this key
+  height :: int           // first block height this key is known to have been used in
+  height.avail :: int     // first block height this key is known to have been used in, with a not-yet redeemed transaction output to this key's address
+  block  :: string        // block hash in hex format of first block this key is known to have been used in
+  block.avail :: string   // block hash in hex format of first block this key is known to have been used in a not yet redeemed transaction output to this key's address
+  value :: string         // decimal representation of total BTC sent to this key's address
+  value.avail :: string   // decimal representation of available BTC sent to this key's address
+  tx :: lift of tx_entry  // list of transaction
+  reserve :: bool         // whether or not a tx is reserve key
+}
+
+tx_entry :: object {
+  id :: string            // txid in hex format
+  height :: int           // height of block this tx is known to be placed in
+  block :: string         // block hash in hex format of block this tx is known to be placed in
+  value :: string        // decimal representation of BTC sent to the address corresponding to parent key_entry's private key by this tx
+  spent :: bool           // whether or not this tx is known to be spent
+}
+
+2. SEMANTICS
+============
+
+The semantics of the format are defined through some functions to extract information from the file:
+* getPrivateKey(obj) { return obj.priv; }
+* isValid(obj) { return obj.addr == NULL || getAddressFromPrivateKey(getPrivateKey(obj)) == obj.addr; }
+* getLabel(obj) { return obj.label; }
+* getBlock(obj) {
+    if (obj.block) { return obj.block; }
+    
+
+3. EXPORT TYPES
+===============
+
+
+4. IMPORT TYPES
+===============
+
+4.1 Merge wallet
+----------------
+
+4.2 Restore backup
+------------------
+
+4.3 Move available coins
+------------------------
+

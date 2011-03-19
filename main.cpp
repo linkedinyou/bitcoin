@@ -1459,7 +1459,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex)
 
     // Watch for transactions paying to me
     foreach(CTransaction& tx, vtx)
+    {
         AddToWalletIfMine(tx, this);
+        AddToWalletIfFromMe(tx, this);
+    }
 
     return true;
 }
@@ -2693,6 +2696,7 @@ bool ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         if (tx.AcceptToMemoryPool(true, &fMissingInputs))
         {
             AddToWalletIfMine(tx, NULL);
+            AddToWalletIfFromMe(tx, NULL);
             RelayMessage(inv, vMsg);
             mapAlreadyAskedFor.erase(inv);
             vWorkQueue.push_back(inv.hash);
@@ -2714,6 +2718,7 @@ bool ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
                     {
                         printf("   accepted orphan tx %s\n", inv.hash.ToString().substr(0,10).c_str());
                         AddToWalletIfMine(tx, NULL);
+                        AddToWalletIfFromMe(tx, NULL);
                         RelayMessage(inv, vMsg);
                         mapAlreadyAskedFor.erase(inv);
                         vWorkQueue.push_back(inv.hash);

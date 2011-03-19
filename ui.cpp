@@ -784,7 +784,7 @@ bool CMainFrame::InsertTransaction(const CWalletTx& wtx, bool fNew, int nIndex)
             InsertLine(fNew, nIndex, hash, strSort, colour,
                        strStatus,
                        nTime ? DateTimeStr(nTime) : "",
-                       "",
+                       "Mixed transaction",
                        FormatMoney(nNet, true),
                        "");
         }
@@ -2728,6 +2728,13 @@ void CreateMainWindow()
     CreateThread(ThreadDelayedRepaint, NULL);
 }
 
+void MainWindowRefresh()
+{
+    if (pframeMain != NULL)
+    {
+        pframeMain->RefreshListCtrl();
+    }
+}
 
 // Define a new application
 class CMyApp : public wxApp

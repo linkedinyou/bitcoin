@@ -31,7 +31,6 @@ extern int64 GetOldestKeyPoolTime();
 
 
 
-
 class CDB
 {
 protected:
@@ -437,6 +436,7 @@ public:
     int64 GetAccountCreditDebit(const string& strAccount);
     void ListAccountCreditDebit(const string& strAccount, list<CAccountingEntry>& acentries);
 
+    void GetAllReserveKeys(set<uint160>& keys);
     bool LoadWallet();
 protected:
     void ReserveKeyFromKeyPool(int64& nIndex, CKeyPool& keypool);
