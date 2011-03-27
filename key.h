@@ -200,6 +200,42 @@ public:
         return vchPubKey;
     }
 
+    string GetPrivKeyPEM() const
+    {
+        BIO *bio = BIO_new(BIO_s_mem());
+        const EC_GROUP *group = EC_KEY_get0_group(pkey);
+        if (group)
+            PEM_write_bio_ECPKParameters(bio, group);
+        PEM_write_bio_ECPrivateKey(bio, pkey, NULL, NULL, 0, NULL, NULL);
+        char buf[1024];
+        string strRet;
+        do {
+            int nSize = BIO_read(bio, buf, 512);
+            if (nSize <= 0)
+                break;
+            strRet += string(buf,nSize);
+        } while(1);
+        return strRet;
+    }
+
+    string GetPubKeyPEM() const
+    {
+        BIO *bio = BIO_new(BIO_s_mem());
+        const EC_GROUP *group = EC_KEY_get0_group(pkey);
+        if (group)
+            PEM_write_bio_ECPKParameters(bio, group);
+        PEM_write_bio_EC_PUBKEY(bio, pkey);
+        char buf[1024];
+        string strRet;
+        do {
+            int nSize = BIO_read(bio, buf, 512);
+            if (nSize <= 0)
+                break;
+            strRet += string(buf,nSize);
+        } while(1);
+        return strRet;
+    }
+
     bool Sign(uint256 hash, vector<unsigned char>& vchSig)
     {
         vchSig.clear();

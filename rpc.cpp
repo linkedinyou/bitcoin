@@ -1286,7 +1286,7 @@ Value importprivkey(const Array& params, bool fHelp)
     return Value::null;
 }
 
-int RetrieveSecret(const uint160 &address, uint256 &privKey)
+int RetrieveSecret(const uint160 &address, CKey &privKey)
 {
     if (mapPubKeys.count(address))
     {
@@ -1294,9 +1294,7 @@ int RetrieveSecret(const uint160 &address, uint256 &privKey)
         if (mapKeys.count(pubKey))
         {
             CPrivKey &cp = mapKeys[pubKey];
-            CKey key;
-            key.SetPrivKey(cp);
-            privKey = key.GetPrivKeyInner();
+            privKey.SetPrivKey(cp);
             return 0;
         }
         return -1;
@@ -1316,12 +1314,44 @@ Value dumpprivkey(const Array& params, bool fHelp)
     bool good = AddressToHash160(addr,address);
     if (good<0)
         throw JSONRPCError(-5, "Invalid bitcoin address");
-    uint256 privKey;
-    int ok = RetrieveSecret(address,privKey);
+    CKey pKey;
+    int ok = RetrieveSecret(address,pKey);
     if (ok<0)
         throw JSONRPCError(-4,"Private key for address " + addr + " is not known");
+    uint256 privKey = pKey.GetPrivKeyInner();
     string secret = PrivKeyToSecret(privKey);
     return secret;
+}
+
+Value dumppemkey(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "dumppemkey <bitcoinaddress>\n"
+            "Reveals the private key corresponding to <bitcoinaddress> in PEM format.");
+
+    string addr = params[0].get_str();
+    uint160 address;
+    bool good = AddressToHash160(addr,address);
+    if (good<0)
+        throw JSONRPCError(-5, "Invalid bitcoin address");
+    CKey pKey;
+    int ok = RetrieveSecret(address,pKey);
+    if (ok)
+    {
+        string secret = pKey.GetPrivKeyPEM();
+        return secret;
+    }
+    else
+        if (mapPubKeys.count(address))
+        {
+            vector<unsigned char> &pubKey = mapPubKeys[address];
+            CKey key;
+            key.SetPubKey(pubKey);
+            return key.GetPubKeyPEM();
+        }
+        else
+            throw JSONRPCError(-4, "Key not known");
 }
 
 string QuoteEscapeString(const string& strString)
@@ -1779,6 +1809,7 @@ pair<string, rpcfn_type> pCallTable[] =
     make_pair("listaccounts",          &listaccounts),
     make_pair("importprivkey",         &importprivkey),
     make_pair("dumpprivkey",           &dumpprivkey),
+    make_pair("dumppemkey",            &dumppemkey),
     make_pair("dumpwallet",            &dumpwallet),
     make_pair("importwallet",          &importwallet),
 };
