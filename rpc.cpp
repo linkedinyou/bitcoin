@@ -1271,6 +1271,182 @@ Value validateaddress(const Array& params, bool fHelp)
     return ret;
 }
 
+class CTxDump
+{
+public:
+    CBlockIndex *pindex;
+    int64 nValue;
+    bool fSpent;
+    CWalletTx* ptx;
+    int nOut;
+    CTxDump(CWalletTx* ptx = NULL, int nOut = -1)
+    {
+        pindex = NULL;
+        nValue = 0;
+        fSpent = false;
+        this->ptx = ptx;
+        this->nOut = nOut;
+    }
+};
+
+class CKeyDump
+{
+public:
+    uint256 key;
+    string strLabel;
+    bool fLabel;
+    CBlockIndex *pindexUsed;
+    CBlockIndex *pindexAvail;
+    int64 nValue;
+    int64 nAvail;
+    vector<CTxDump> vtxdmp;
+    bool fReserve;
+    bool fUsed;
+    CKeyDump(uint256 key = 0)
+    {
+        strLabel = "";
+        pindexUsed = NULL;
+        pindexAvail = NULL;
+        nValue = 0;
+        nAvail = 0;
+        fReserve = false;
+        fUsed = false;
+        fLabel = false;
+        this->key = key;
+    }
+};
+
+void GetWalletDump(map<uint160,CKeyDump> &mapDump)
+{
+    CRITICAL_BLOCK(cs_main)
+    CRITICAL_BLOCK(cs_mapKeys)
+    {
+        for (map<vector<unsigned char>, CPrivKey>::iterator it = mapKeys.begin(); it != mapKeys.end(); ++it)
+        {
+            CKey key;
+            key.SetPrivKey((*it).second);
+            mapDump[Hash160((*it).first)] = CKeyDump(key.GetPrivKeyInner());
+        }
+        for (map<uint256, CWalletTx>::iterator it = mapWallet.begin(); it != mapWallet.end(); ++it)
+        {
+            CWalletTx* coin=&(*it).second;
+            CBlockIndex *pindex;
+            if (coin->GetDepthInMainChain(pindex)>0)
+            {
+                for (int i=0; i < coin->vout.size(); i++) 
+                {
+                    CTxOut &out = coin->vout[i];
+                    int64 nCredit = out.GetCredit();
+                    if (nCredit > 0)
+                    {
+                        CTxDump txdmp(coin,i);
+                        txdmp.pindex = pindex;
+                        txdmp.nValue = nCredit;
+                        txdmp.fSpent = coin->fSpent;
+                        uint160 hash160 = 0;
+                        vector<unsigned char> vchPubKey;
+                        if (ExtractHash160(out.scriptPubKey, hash160))
+                            true;
+                        else if (ExtractPubKey(out.scriptPubKey, false, vchPubKey))
+                            hash160 = Hash160(vchPubKey);
+                        if (mapDump.count(hash160) == 0)
+                        {
+                            uint256 keyDummy = 0;
+                            mapDump[hash160] = CKeyDump(keyDummy);
+                        }
+                        CKeyDump &keydump = mapDump[hash160];
+                        if (keydump.pindexUsed==NULL || keydump.pindexUsed->nHeight > txdmp.pindex->nHeight)
+                            keydump.pindexUsed = txdmp.pindex;
+                        if (!txdmp.fSpent && (keydump.pindexAvail==NULL || keydump.pindexAvail->nHeight > txdmp.pindex->nHeight))
+                            keydump.pindexAvail = txdmp.pindex;
+                        keydump.nValue += txdmp.nValue;
+                        if (!txdmp.fSpent)
+                            keydump.nAvail += txdmp.nValue;
+                        keydump.vtxdmp.push_back(txdmp);
+                        keydump.fUsed = true;
+                    }
+                }
+            }
+        }
+        set<uint160> reserveKeys;
+        CWalletDB wallet;
+        wallet.GetAllReserveKeys(reserveKeys);
+        foreach (const uint160& key, reserveKeys)
+        {
+             if (mapDump.count(key) && !mapDump[key].fUsed)
+                 mapDump[key].fReserve = true;
+        }
+    }
+    for (map<uint160, CKeyDump>::iterator it = mapDump.begin(); it != mapDump.end(); ++it)
+    {
+        string strAddress = Hash160ToAddress((*it).first);
+        if (mapAddressBook.count(strAddress))
+        {
+            (*it).second.fLabel = true;
+            (*it).second.fReserve = false;
+            (*it).second.strLabel = mapAddressBook[strAddress];
+        }
+    }
+}
+
+Value dumpwallet(const Array& params, bool fHelp)
+{
+    map<uint160,CKeyDump> mapDump;
+    GetWalletDump(mapDump);
+    Array ret;
+    int nHeight = pindexBest->nHeight;
+    for (map<uint160, CKeyDump>::iterator it = mapDump.begin(); it != mapDump.end(); ++it)
+    {
+        Object jsonKey;
+        jsonKey.push_back(Pair("addr",Hash160ToAddress((*it).first)));
+        CKeyDump &keydump = (*it).second;
+        jsonKey.push_back(Pair("key",PrivKeyToSecret(keydump.key)));
+        if (keydump.fLabel)
+            jsonKey.push_back(Pair("label",keydump.strLabel));
+        if (keydump.pindexUsed)
+        {
+            jsonKey.push_back(Pair("height",(boost::int64_t)keydump.pindexUsed->nHeight));
+            jsonKey.push_back(Pair("block",keydump.pindexUsed->phashBlock->GetHex()));
+        } else {
+            jsonKey.push_back(Pair("height",(boost::int64_t)nHeight));
+        }
+        if (keydump.pindexAvail)
+        {
+            jsonKey.push_back(Pair("height.avail",(boost::int64_t)keydump.pindexAvail->nHeight));
+            jsonKey.push_back(Pair("block.avail",keydump.pindexAvail->phashBlock->GetHex()));
+        } else {
+            jsonKey.push_back(Pair("height.avail",(boost::int64_t)nHeight));
+        }
+        if (keydump.fUsed)
+            jsonKey.push_back(Pair("value",FormatMoney(keydump.nValue)));
+        if (keydump.nAvail>0)
+            jsonKey.push_back(Pair("value.avail",FormatMoney(keydump.nAvail)));
+        if (keydump.fReserve)
+            jsonKey.push_back(Pair("reserve",(boost::int64_t)1));
+        if (keydump.vtxdmp.size()>0)
+        {
+            Object jsonTxs;
+            for (vector<CTxDump>::iterator it2 = keydump.vtxdmp.begin(); it2 != keydump.vtxdmp.end(); ++it2)
+            {
+                Object jsonTx;
+                CTxDump &txdump = *it2;
+                if (txdump.pindex)
+                {
+                    jsonTx.push_back(Pair("height",(boost::int64_t)txdump.pindex->nHeight));
+                    jsonTx.push_back(Pair("block",txdump.pindex->phashBlock->GetHex()));
+                }
+                jsonTx.push_back(Pair("value",FormatMoney(txdump.nValue)));
+                if (txdump.fSpent)
+                    jsonTx.push_back(Pair("spent",(boost::int64_t)1));
+                jsonTxs.push_back(Pair(txdump.ptx->GetHash().GetHex(),jsonTx));
+            }
+            jsonKey.push_back(Pair("tx",jsonTxs));
+        }
+        ret.push_back(jsonKey);
+    }
+    return ret;
+}
+
 
 Value getwork(const Array& params, bool fHelp)
 {
@@ -1430,6 +1606,7 @@ pair<string, rpcfn_type> pCallTable[] =
     make_pair("listtransactions",      &listtransactions),
     make_pair("getwork",               &getwork),
     make_pair("listaccounts",          &listaccounts),
+    make_pair("dumpwallet",            &dumpwallet),
 };
 map<string, rpcfn_type> mapCallTable(pCallTable, pCallTable + sizeof(pCallTable)/sizeof(pCallTable[0]));
 
