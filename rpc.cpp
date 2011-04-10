@@ -1401,10 +1401,11 @@ Value dumpwallet(const Array& params, bool fHelp)
             "    noreserve:  do not dump reserve keys\n"
             "    nolabel:    do not include label/account names\n"
             "    nospent:    do not include spent keys/transactions\n"
-            "    terse:      do not include addresses and amounts\n");
+            "    terse:      do not include addresses and amounts\n"
+            "    compact:    no indentation or newlines\n");
 
     bool fHeight=false, fBlock=false, fTx=false, fReserve=true, fLabel=true, fSpent=true,
-         fAddr=true, fAmount=true;
+         fAddr=true, fAmount=true, fCompact=false;
     for (int i = 0; i<params.size(); i++)
     {
         string strArg = params[i].get_str();
@@ -1424,6 +1425,27 @@ Value dumpwallet(const Array& params, bool fHelp)
         {
             fAddr = false;
             fAmount = false;
+        }
+        if (strArg == "compact")
+            fCompact = true;
+        if (strArg == "backup")
+        {
+            fHeight = true;
+            fReserve = true;
+            fLabel = true;
+            fSpent = true;
+        }
+        if (strArg == "scratchoff")
+        {
+            fHeight = false;
+            fBlock = false;
+            fTx = true;
+            fReserve = false;
+            fLabel = false;
+            fSpent = false;
+            fAddr = false;
+            fAmount = false;
+            fCompact = true;
         }
     }
 
@@ -1495,6 +1517,10 @@ Value dumpwallet(const Array& params, bool fHelp)
             jsonKey.push_back(Pair("tx",jsonTxs));
         }
         ret.push_back(jsonKey);
+    }
+    if (fCompact)
+    {
+        return (write_string(Value(ret), false) + "\n");
     }
     return ret;
 }
