@@ -1391,51 +1391,103 @@ void GetWalletDump(map<uint160,CKeyDump> &mapDump)
 
 Value dumpwallet(const Array& params, bool fHelp)
 {
+    if (fHelp)
+        throw runtime_error(
+            "dumpwallet [option]...\n"
+            "Dump wallet.\nOptions:\n"
+            "    height:     include height information\n"
+            "    block:      include block ID's\n"
+            "    tx:         include transaction-specific information\n"
+            "    noreserve:  do not dump reserve keys\n"
+            "    nolabel:    do not include label/account names\n"
+            "    nospent:    do not include spent keys/transactions\n"
+            "    terse:      do not include addresses and amounts\n");
+
+    bool fHeight=false, fBlock=false, fTx=false, fReserve=true, fLabel=true, fSpent=true,
+         fAddr=true, fAmount=true;
+    for (int i = 0; i<params.size(); i++)
+    {
+        string strArg = params[i].get_str();
+        if (strArg == "height")
+            fHeight = true;
+        if (strArg == "block")
+            fBlock = true;
+        if (strArg == "tx")
+            fTx = true;
+        if (strArg == "noreserve")
+            fReserve = false;
+        if (strArg == "nolabel")
+            fLabel = false;
+        if (strArg == "nospent")
+            fSpent = false;
+        if (strArg == "terse")
+        {
+            fAddr = false;
+            fAmount = false;
+        }
+    }
+
     map<uint160,CKeyDump> mapDump;
     GetWalletDump(mapDump);
     Array ret;
     int nHeight = pindexBest->nHeight;
     for (map<uint160, CKeyDump>::iterator it = mapDump.begin(); it != mapDump.end(); ++it)
     {
-        Object jsonKey;
-        jsonKey.push_back(Pair("addr",Hash160ToAddress((*it).first)));
         CKeyDump &keydump = (*it).second;
+        if (!fReserve && keydump.fReserve)
+            continue;
+        if (!fSpent && keydump.nAvail==0)
+            continue;
+        Object jsonKey;
+        if (fAddr)
+            jsonKey.push_back(Pair("addr",Hash160ToAddress((*it).first)));
         jsonKey.push_back(Pair("key",PrivKeyToSecret(keydump.key)));
-        if (keydump.fLabel)
+        if (fLabel && keydump.fLabel)
             jsonKey.push_back(Pair("label",keydump.strLabel));
         if (keydump.pindexUsed)
         {
-            jsonKey.push_back(Pair("height",(boost::int64_t)keydump.pindexUsed->nHeight));
-            jsonKey.push_back(Pair("block",keydump.pindexUsed->phashBlock->GetHex()));
+            if (fHeight && !fTx && fSpent)
+                jsonKey.push_back(Pair("height",(boost::int64_t)keydump.pindexUsed->nHeight));
+            if (fBlock && !fTx && fSpent)
+                jsonKey.push_back(Pair("block",keydump.pindexUsed->phashBlock->GetHex()));
         } else {
-            jsonKey.push_back(Pair("height",(boost::int64_t)nHeight));
+            if (fHeight && !fTx && fSpent)
+                jsonKey.push_back(Pair("height",(boost::int64_t)nHeight));
         }
         if (keydump.pindexAvail)
         {
-            jsonKey.push_back(Pair("height.avail",(boost::int64_t)keydump.pindexAvail->nHeight));
-            jsonKey.push_back(Pair("block.avail",keydump.pindexAvail->phashBlock->GetHex()));
+            if (fHeight && !fTx)
+                jsonKey.push_back(Pair("heightAvail",(boost::int64_t)keydump.pindexAvail->nHeight));
+            if (fBlock && !fTx)
+                jsonKey.push_back(Pair("blockAvail",keydump.pindexAvail->phashBlock->GetHex()));
         } else {
-            jsonKey.push_back(Pair("height.avail",(boost::int64_t)nHeight));
+            if (fHeight && !fTx)
+                jsonKey.push_back(Pair("heightAvail",(boost::int64_t)nHeight));
         }
-        if (keydump.fUsed)
+        if (fAmount && !fTx && keydump.fUsed && fSpent)
             jsonKey.push_back(Pair("value",FormatMoney(keydump.nValue)));
-        if (keydump.nAvail>0)
-            jsonKey.push_back(Pair("value.avail",FormatMoney(keydump.nAvail)));
+        if (fAmount && !fTx && keydump.nAvail>0)
+            jsonKey.push_back(Pair("valueAvail",FormatMoney(keydump.nAvail)));
         if (keydump.fReserve)
             jsonKey.push_back(Pair("reserve",(boost::int64_t)1));
-        if (keydump.vtxdmp.size()>0)
+        if (fTx && keydump.vtxdmp.size()>0)
         {
             Object jsonTxs;
             for (vector<CTxDump>::iterator it2 = keydump.vtxdmp.begin(); it2 != keydump.vtxdmp.end(); ++it2)
             {
                 Object jsonTx;
                 CTxDump &txdump = *it2;
+                if (!fSpent && txdump.fSpent)
+                    continue;
                 if (txdump.pindex)
                 {
-                    jsonTx.push_back(Pair("height",(boost::int64_t)txdump.pindex->nHeight));
-                    jsonTx.push_back(Pair("block",txdump.pindex->phashBlock->GetHex()));
+                    if (fHeight) 
+                        jsonTx.push_back(Pair("height",(boost::int64_t)txdump.pindex->nHeight));
+                    if (fBlock)
+                        jsonTx.push_back(Pair("block",txdump.pindex->phashBlock->GetHex()));
                 }
-                jsonTx.push_back(Pair("value",FormatMoney(txdump.nValue)));
+                if (fAmount)
+                    jsonTx.push_back(Pair("value",FormatMoney(txdump.nValue)));
                 if (txdump.fSpent)
                     jsonTx.push_back(Pair("spent",(boost::int64_t)1));
                 jsonTxs.push_back(Pair(txdump.ptx->GetHash().GetHex(),jsonTx));
