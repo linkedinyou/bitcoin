@@ -1342,7 +1342,7 @@ void GetWalletDump(map<uint160,CKeyDump> &mapDump)
                         CTxDump txdmp(coin,i);
                         txdmp.pindex = pindex;
                         txdmp.nValue = nCredit;
-                        txdmp.fSpent = coin->fSpent;
+                        txdmp.fSpent = coin->IsSpent(i);
                         uint160 hash160 = 0;
                         vector<unsigned char> vchPubKey;
                         if (ExtractHash160(out.scriptPubKey, hash160))
