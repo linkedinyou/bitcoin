@@ -1495,10 +1495,9 @@ Value dumpwallet(const Array& params, bool fHelp)
         if (fTx && keydump.vtxdmp.size()>0)
         {
             Object jsonTxs;
-            for (vector<CTxDump>::iterator it2 = keydump.vtxdmp.begin(); it2 != keydump.vtxdmp.end(); ++it2)
+            foreach (CTxDump& txdump, keydump.vtxdmp)
             {
                 Object jsonTx;
-                CTxDump &txdump = *it2;
                 if (!fSpent && txdump.fSpent)
                     continue;
                 if (txdump.pindex)
@@ -1512,16 +1511,14 @@ Value dumpwallet(const Array& params, bool fHelp)
                     jsonTx.push_back(Pair("value",FormatMoney(txdump.nValue)));
                 if (txdump.fSpent)
                     jsonTx.push_back(Pair("spent",(boost::int64_t)1));
-                jsonTxs.push_back(Pair(txdump.ptx->GetHash().GetHex(),jsonTx));
+                jsonTxs.push_back(Pair(txdump.ptx->GetHash().GetHex() + ":" + boost::lexical_cast<std::string>(txdump.nOut),jsonTx));
             }
             jsonKey.push_back(Pair("tx",jsonTxs));
         }
         ret.push_back(jsonKey);
     }
     if (fCompact)
-    {
-        return (write_string(Value(ret), false) + "\n");
-    }
+        return write_string(Value(ret), false);
     return ret;
 }
 
