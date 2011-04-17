@@ -73,6 +73,7 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
 FILE* AppendBlockFile(unsigned int& nFileRet);
 bool AddKey(const CKey& key);
 vector<unsigned char> GenerateNewKey();
+bool AddWalletTx(uint256& hash, const CWalletTx& wtxIn);
 bool AddToWallet(const CWalletTx& wtxIn);
 void WalletUpdateSpent(const COutPoint& prevout);
 int ScanForWalletTransactions(CBlockIndex* pindexStart);
@@ -782,7 +783,11 @@ public:
     unsigned int nTimeReceived;  // time received by this node
     char fFromMe;
     string strFromAccount;
+
+    // Any additions to CWalletTx must be added to mapValue so older versions don't throw away the new data.
     vector<char> vfSpent;
+    char fConflicting; // conflicts with block chain
+    char fRejected;    // rejected: either conflicting, or depending on a rejected transaction
 
     // memory only
     mutable char fDebitCached;
@@ -836,6 +841,8 @@ public:
         nTimeDisplayed = 0;
         nLinesDisplayed = 0;
         fConfirmedDisplayed = false;
+        fRejected = false;
+        fConflicting = false;
     }
 
     IMPLEMENT_SERIALIZE
@@ -848,6 +855,8 @@ public:
         if (!fRead)
         {
             pthis->mapValue["fromaccount"] = pthis->strFromAccount;
+            if (pthis->fRejected)
+                pthis->mapValue["rejected"] = (pthis->fConflicting ? "C" : "R");
 
             string str;
             foreach(char f, vfSpent)
@@ -871,6 +880,8 @@ public:
         if (fRead)
         {
             pthis->strFromAccount = pthis->mapValue["fromaccount"];
+            pthis->fConflicting = pthis->mapValue["rejected"] == "C";
+            pthis->fRejected = pthis->fConflicting || pthis->mapValue["rejected"] == "R";
 
             if (mapValue.count("spent"))
                 foreach(char c, pthis->mapValue["spent"])
@@ -879,6 +890,7 @@ public:
                 pthis->vfSpent.assign(vout.size(), fSpent);
         }
 
+        pthis->mapValue.erase("rejected");
         pthis->mapValue.erase("fromaccount");
         pthis->mapValue.erase("version");
         pthis->mapValue.erase("spent");
@@ -912,14 +924,14 @@ public:
         fChangeCached = false;
     }
 
-    void MarkSpent(unsigned int nOut)
+    void MarkSpent(unsigned int nOut, bool fSpent = true)
     {
         if (nOut >= vout.size())
             throw runtime_error("CWalletTx::MarkSpent() : nOut out of range");
         vfSpent.resize(vout.size());
-        if (!vfSpent[nOut])
+        if (vfSpent[nOut] != fSpent)
         {
-            vfSpent[nOut] = true;
+            vfSpent[nOut] = fSpent;
             fAvailableCreditCached = false;
         }
     }
@@ -935,6 +947,10 @@ public:
 
     int64 GetDebit() const
     {
+        // rejected transactions do not consume
+        if (IsRejected())
+            return 0;
+
         if (vin.empty())
             return 0;
         if (fDebitCached)
@@ -946,6 +962,10 @@ public:
 
     int64 GetCredit(bool fUseCache=true) const
     {
+        // rejected transactions are considered worthless
+        if (IsRejected())
+            return 0;
+
         // Must wait until coinbase is safely deep enough in the chain before valuing it
         if (IsCoinBase() && GetBlocksToMaturity() > 0)
             return 0;
@@ -1014,6 +1034,8 @@ public:
             return true;
         if (!IsFromMe()) // using wtx's cached debit
             return false;
+        if (IsRejected())
+            return false;
 
         // If no confirmations but it's from us, we can still
         // consider it confirmed if all dependencies are confirmed
@@ -1051,6 +1073,16 @@ public:
         return CWalletDB().WriteTx(GetHash(), *this);
     }
 
+    bool IsRejected() const
+    {
+        return fRejected;
+    }
+
+    void AddToWalletInputs();
+    void RemoveFromWalletInputs();
+    void MarkConflicting(bool fConflicting);
+    void UpdateRejected(bool fCertainlyRejected);
+    void UpdateSpents();
 
     int64 GetTxTime() const;
     int GetRequestCount() const;
@@ -2042,6 +2074,7 @@ public:
 
 extern map<uint256, CTransaction> mapTransactions;
 extern map<uint256, CWalletTx> mapWallet;
+extern map<COutPoint, uint256> mapWalletInputs;
 extern vector<uint256> vWalletUpdated;
 extern CCriticalSection cs_mapWallet;
 extern map<vector<unsigned char>, CPrivKey> mapKeys;

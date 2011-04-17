@@ -382,16 +382,12 @@ public:
         return Read(make_pair(string("tx"), hash), wtx);
     }
 
-    bool WriteTx(uint256 hash, const CWalletTx& wtx)
-    {
-        nWalletDBUpdated++;
-        return Write(make_pair(string("tx"), hash), wtx);
-    }
+    bool WriteTx(uint256 hash, const CWalletTx& wtx);
 
     bool EraseTx(uint256 hash)
     {
         nWalletDBUpdated++;
-        return Erase(make_pair(string("tx"), hash));
+        return Erase(make_pair(string("tx"), hash)) && Erase(make_pair(string("rejtx"), hash));
     }
 
     bool ReadKey(const vector<unsigned char>& vchPubKey, CPrivKey& vchPrivKey)

@@ -398,6 +398,7 @@ bool AppInit2(int argc, char* argv[])
         printf("mapKeys.size() = %d\n",         mapKeys.size());
         printf("mapPubKeys.size() = %d\n",      mapPubKeys.size());
         printf("mapWallet.size() = %d\n",       mapWallet.size());
+        printf("mapWalletInputs.size() = %d\n", mapWalletInputs.size());
         printf("mapAddressBook.size() = %d\n",  mapAddressBook.size());
 
     if (!strErrors.empty())
