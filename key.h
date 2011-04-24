@@ -118,15 +118,23 @@ public:
         return true;
     }
 
-    vector<unsigned char> GetPubKey() const
+    vector<unsigned char> GetPubKey(bool fCompressed = false) const
     {
-        unsigned int nSize = i2o_ECPublicKey(pkey, NULL);
+        EC_KEY *key = pkey;
+        if (fCompressed)
+        {
+            key = EC_KEY_dup(key);
+            EC_KEY_set_conv_form(key, POINT_CONVERSION_COMPRESSED);
+        }
+        unsigned int nSize = i2o_ECPublicKey(key, NULL);
         if (!nSize)
             throw key_error("CKey::GetPubKey() : i2o_ECPublicKey failed");
         vector<unsigned char> vchPubKey(nSize, 0);
         unsigned char* pbegin = &vchPubKey[0];
-        if (i2o_ECPublicKey(pkey, &pbegin) != nSize)
+        if (i2o_ECPublicKey(key, &pbegin) != nSize)
             throw key_error("CKey::GetPubKey() : i2o_ECPublicKey returned unexpected size");
+        if (fCompressed)
+            EC_KEY_free(key);
         return vchPubKey;
     }
 

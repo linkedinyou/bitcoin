@@ -1062,7 +1062,9 @@ bool Solver(const CScript& scriptPubKey, uint256 hash, int nHashType, CScript& s
                     if (!CKey::Sign(mapKeys[vchPubKey], hash, vchSig))
                         return false;
                     vchSig.push_back((unsigned char)nHashType);
-                    scriptSigRet << vchSig << vchPubKey;
+                    CKey key;
+                    key.SetPubKey(vchPubKey);
+                    scriptSigRet << vchSig << key.GetPubKey(true);
                 }
             }
             else
