@@ -149,6 +149,10 @@ public:
             return false;
         return true;
     }
+    
+    static CKey* GenPubKey(int nPubKeyId, uint256 hash, const vector<unsigned char>& vchSig)
+    {
+    }
 
     static bool Sign(const CPrivKey& vchPrivKey, uint256 hash, vector<unsigned char>& vchSig)
     {
