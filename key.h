@@ -26,6 +26,17 @@
 // see www.keylength.com
 // script supports up to 75 for single byte push
 
+struct ec_point_st {
+const EC_METHOD *meth;
+/* All members except 'meth' are handled by the method functions,
+ * even if they appear generic */
+BIGNUM X;
+BIGNUM Y;
+BIGNUM Z; /* Jacobian projective coordinates:
+           * (X, Y, Z)  represents  (X/Z^2, Y/Z^3)  if  Z != 0 */
+int Z_is_one; /* enable optimized point arithmetics for special case */
+} /* EC_POINT */;
+
 int static inline EC_KEY_regenerate_key(EC_KEY *eckey, BIGNUM *priv_key)
 {
     int ok = 0;
@@ -71,7 +82,6 @@ int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const u
 
     int ret = 0;
     BN_CTX *ctx = NULL;
-    BIGNUM *cofactor = NULL;
     BIGNUM *x = NULL;
     BIGNUM *e = NULL;
     BIGNUM *order = NULL;
@@ -79,52 +89,67 @@ int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const u
     BIGNUM *eor = NULL;
     EC_POINT *R = NULL;
     EC_POINT *O = NULL;
+    EC_POINT *Q = NULL;
     BIGNUM *rr = NULL;
+    BIGNUM *zero = NULL;
     int n = 0;
     int i = recid / 2;
 
     const EC_GROUP *group = EC_KEY_get0_group(eckey);
     if ((ctx = BN_CTX_new()) == NULL) { ret = -1; goto err; }
-    
+
     BN_CTX_start(ctx);
-    cofactor = BN_CTX_get(ctx);
-    if (!EC_GROUP_get_cofactor(group, cofactor, ctx)) { ret = -2; goto err; }
     order = BN_CTX_get(ctx);
     if (!EC_GROUP_get_order(group, order, ctx)) { ret = -3; goto err; }
-    
+    cout << "order="; BN_print_fp(stdout, order); cout << endl;
+
     x = BN_CTX_get(ctx);
-    BN_copy(x, cofactor);
-    BN_mul_word(x, i);
-    BN_mod_add(x, x, ecsig->r, order, ctx);
+    if (!BN_copy(x, order)) { ret=-4; goto err; }
+    if (!BN_mul_word(x, i)) { ret=-5; goto err; }
+    cout << "i*order="; BN_print_fp(stdout, x); cout << endl;
+    if (!BN_mod_add(x, x, ecsig->r, order, ctx)) { ret=-6; goto err; }
+    cout << "i*order+r=x="; BN_print_fp(stdout, x); cout << endl;
+
+    if ((R = EC_POINT_new(group)) == NULL) { ret = -7; goto err; }
     
-    if ((R = EC_POINT_new(group)) == NULL) { ret = -4; goto err; }
+    if (!EC_POINT_set_compressed_coordinates_GFp(group, R, x, recid % 2, ctx)) { ret=-8; goto err; }
+    cout << "R: (X="; BN_print_fp(stdout,&R->X); cout << ",Y="; BN_print_fp(stdout,&R->Y); cout << ",Z="; BN_print_fp(stdout,&R->Z); cout << ")\n";
+
+    if ((O = EC_POINT_new(group)) == NULL) { ret = -9; goto err; }
+
+    if (!EC_POINT_mul(group, O, NULL, R, order, ctx)) { ret=-10; goto err; }
+    cout << "O: (X="; BN_print_fp(stdout,&O->X); cout << ",Y="; BN_print_fp(stdout,&O->Y); cout << ",Z="; BN_print_fp(stdout,&O->Z); cout << ")\n";
     
-    EC_POINT_set_compressed_coordinates_GFp(group, R, x, 0, ctx);
+    if (!EC_POINT_is_at_infinity(group, O)) { ret = 0; goto err; }
     
-    if ((O = EC_POINT_new(group)) == NULL) { ret = -5; goto err; }
+//    if (recid & 1) if (!EC_POINT_invert(group, R, ctx)) { ret=-12; goto err; }
     
-    EC_POINT_mul(group, O, NULL, R, cofactor, ctx);
-    
-    if (!EC_POINT_is_at_infinity(group, O)) { ret = -6; goto err; }
-    
-    if (recid & 1) EC_POINT_invert(group, R, ctx);
-    
+    if ((Q = EC_POINT_new(group)) == NULL) { ret = -13; goto err; }
     n = BN_num_bits(order);
     e = BN_CTX_get(ctx);
-    BN_bin2bn(msg, msglen, e);
+    if (!BN_bin2bn(msg, msglen, e)) { ret=-14; goto err; }
+    cout << "key recovery: n=" << n << " msglen=" << (8*msglen) << endl;
     if (8*msglen > n) BN_rshift(e, e, 8-(n & 7));
-    BN_set_negative(e, 1);
+    cout << "e="; BN_print_fp(stdout, e); cout << endl;
+    zero = BN_CTX_get(ctx);
+    if (!BN_zero(zero)) { ret=-21; goto err; }
+    if (!BN_mod_sub(e, zero, e, order, ctx)) { ret=-15; goto err; }
+    cout << "-e="; BN_print_fp(stdout, e); cout << endl;
+    
     
     rr = BN_CTX_get(ctx);
-    BN_mod_inverse(rr, ecsig->r, order, ctx);
+    if (!BN_mod_inverse(rr, ecsig->r, order, ctx)) { ret=-16; goto err; }
     sor = BN_CTX_get(ctx);
-    BN_mod_mul(sor, ecsig->s, rr, order, ctx);
+    if (!BN_mod_mul(sor, ecsig->s, rr, order, ctx)) { ret=-17; goto err; }
+    cout << "s/r="; BN_print_fp(stdout, sor); cout << endl;
     eor = BN_CTX_get(ctx);
-    BN_mod_mul(eor, e, rr, order, ctx);
+    if (!BN_mod_mul(eor, e, rr, order, ctx)) { ret=-18; goto err; }
+    cout << "-e/r="; BN_print_fp(stdout, eor); cout << endl;
 
-    EC_POINT_mul(group, O, eor, R, sor, ctx);
+    if (!EC_POINT_mul(group, Q, eor, R, sor, ctx)) { ret=-19; goto err; }
+    cout << "Q: (X="; BN_print_fp(stdout,&Q->X); cout << ",Y="; BN_print_fp(stdout,&Q->Y); cout << ",Z="; BN_print_fp(stdout,&Q->Z); cout << ")\n";
 
-    EC_KEY_set_public_key(eckey, O);
+    if (!EC_KEY_set_public_key(eckey, Q)) { ret=-20; goto err; }
     
     ret = 1;
     
@@ -135,6 +160,7 @@ err:
     }
     if (R != NULL) EC_POINT_free(R);
     if (O != NULL) EC_POINT_free(O);
+    if (Q != NULL) EC_POINT_free(Q);
     return ret;
 }
 
@@ -273,8 +299,12 @@ public:
 	    int ret = ECDSA_SIG_recover_key(key.pkey, sig, (unsigned char*)&hash, sizeof(hash), i);
 	    cout << "try " << i << ": ret=" << ret << endl;
 	    if (ret==1)
+	    {
+		cout << "real pubkey: " << HexNumStr(this->GetPubKey()) << endl;
+		cout << "rec. pubkey: " << HexNumStr(key.GetPubKey()) << endl;
 	        if (key.GetPubKey() == this->GetPubKey())
 	            return i;
+	    }
 	}
         return -1;
     }
