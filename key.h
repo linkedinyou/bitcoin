@@ -26,7 +26,117 @@
 // see www.keylength.com
 // script supports up to 75 for single byte push
 
+int static inline EC_KEY_regenerate_key(EC_KEY *eckey, BIGNUM *priv_key)
+{
+    int ok = 0;
+    BN_CTX *ctx = NULL;
+    BIGNUM *order = NULL;
+    EC_POINT *pub_key = NULL;
 
+    if (!eckey) return 0;
+
+    const EC_GROUP *group = EC_KEY_get0_group(eckey);
+
+    if ((order = BN_new()) == NULL) goto err;
+    if ((ctx = BN_CTX_new()) == NULL) goto err;
+
+    if (!EC_GROUP_get_order(group, order, ctx)) goto err;
+
+    pub_key = EC_POINT_new(group);
+
+    if (pub_key == NULL) goto err;
+
+    if (!EC_POINT_mul(group, pub_key, priv_key, NULL, NULL, ctx)) goto err;
+
+    EC_KEY_set_private_key(eckey,priv_key);
+    EC_KEY_set_public_key(eckey,pub_key);
+
+    ok=1;
+
+err:
+
+    if (order)
+        BN_free(order);
+    if (pub_key)
+        EC_POINT_free(pub_key);
+    if (ctx != NULL)
+        BN_CTX_free(ctx);
+
+    return(ok);
+}
+
+int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned char *msg, int msglen, int recid)
+{
+    if (!eckey) return 0;
+
+    int ret = 0;
+    BN_CTX *ctx = NULL;
+    BIGNUM *cofactor = NULL;
+    BIGNUM *x = NULL;
+    BIGNUM *e = NULL;
+    BIGNUM *order = NULL;
+    BIGNUM *sor = NULL;
+    BIGNUM *eor = NULL;
+    EC_POINT *R = NULL;
+    EC_POINT *O = NULL;
+    BIGNUM *rr = NULL;
+    int n = 0;
+    int i = recid / 2;
+
+    const EC_GROUP *group = EC_KEY_get0_group(eckey);
+    if ((ctx = BN_CTX_new()) == NULL) { ret = -1; goto err; }
+    
+    BN_CTX_start(ctx);
+    cofactor = BN_CTX_get(ctx);
+    if (!EC_GROUP_get_cofactor(group, cofactor, ctx)) { ret = -2; goto err; }
+    order = BN_CTX_get(ctx);
+    if (!EC_GROUP_get_order(group, order, ctx)) { ret = -3; goto err; }
+    
+    x = BN_CTX_get(ctx);
+    BN_copy(x, cofactor);
+    BN_mul_word(x, i);
+    BN_mod_add(x, x, ecsig->r, order, ctx);
+    
+    if ((R = EC_POINT_new(group)) == NULL) { ret = -4; goto err; }
+    
+    EC_POINT_set_compressed_coordinates_GFp(group, R, x, 0, ctx);
+    
+    if ((O = EC_POINT_new(group)) == NULL) { ret = -5; goto err; }
+    
+    EC_POINT_mul(group, O, NULL, R, cofactor, ctx);
+    
+    if (!EC_POINT_is_at_infinity(group, O)) { ret = -6; goto err; }
+    
+    if (recid & 1) EC_POINT_invert(group, R, ctx);
+    
+    n = BN_num_bits(order);
+    e = BN_CTX_get(ctx);
+    BN_bin2bn(msg, msglen, e);
+    if (8*msglen > n) BN_rshift(e, e, 8-(n & 7));
+    BN_set_negative(e, 1);
+    
+    rr = BN_CTX_get(ctx);
+    BN_mod_inverse(rr, ecsig->r, order, ctx);
+    sor = BN_CTX_get(ctx);
+    BN_mod_mul(sor, ecsig->s, rr, order, ctx);
+    eor = BN_CTX_get(ctx);
+    BN_mod_mul(eor, e, rr, order, ctx);
+
+    EC_POINT_mul(group, O, eor, R, sor, ctx);
+
+    EC_KEY_set_public_key(eckey, O);
+    
+    ret = 1;
+    
+err:
+    if (ctx) {
+        BN_CTX_end(ctx);
+        BN_CTX_free(ctx);
+    }
+    if (R != NULL) EC_POINT_free(R);
+    if (O != NULL) EC_POINT_free(O);
+    return ret;
+}
 
 class key_error : public std::runtime_error
 {
@@ -147,11 +257,26 @@ public:
         // -1 = error, 0 = bad sig, 1 = good
         if (ECDSA_verify(0, (unsigned char*)&hash, sizeof(hash), &vchSig[0], vchSig.size(), pkey) != 1)
             return false;
+        cout << "Verification of signature: recid=" << RecoverPubKey(hash, vchSig) << endl;
         return true;
     }
     
-    static CKey* GenPubKey(int nPubKeyId, uint256 hash, const vector<unsigned char>& vchSig)
+    int RecoverPubKey(uint256 hash, const vector<unsigned char>& vchSig)
     {
+        CKey key;
+	ECDSA_SIG *sig = ECDSA_SIG_new();
+	const unsigned char *pvchSig = &vchSig[0];
+	d2i_ECDSA_SIG(&sig, &pvchSig, vchSig.size());
+	key.fSet = true;
+	for (int i = 0; i<4; i++)
+	{
+	    int ret = ECDSA_SIG_recover_key(key.pkey, sig, (unsigned char*)&hash, sizeof(hash), i);
+	    cout << "try " << i << ": ret=" << ret << endl;
+	    if (ret==1)
+	        if (key.GetPubKey() == this->GetPubKey())
+	            return i;
+	}
+        return -1;
     }
 
     static bool Sign(const CPrivKey& vchPrivKey, uint256 hash, vector<unsigned char>& vchSig)
