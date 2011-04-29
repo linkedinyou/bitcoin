@@ -101,24 +101,24 @@ int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const u
     BN_CTX_start(ctx);
     order = BN_CTX_get(ctx);
     if (!EC_GROUP_get_order(group, order, ctx)) { ret = -3; goto err; }
-    cout << "order="; BN_print_fp(stdout, order); cout << endl;
+//    cout << "order="; BN_print_fp(stdout, order); cout << endl;
 
     x = BN_CTX_get(ctx);
     if (!BN_copy(x, order)) { ret=-4; goto err; }
     if (!BN_mul_word(x, i)) { ret=-5; goto err; }
-    cout << "i*order="; BN_print_fp(stdout, x); cout << endl;
+//    cout << "i*order="; BN_print_fp(stdout, x); cout << endl;
     if (!BN_mod_add(x, x, ecsig->r, order, ctx)) { ret=-6; goto err; }
-    cout << "i*order+r=x="; BN_print_fp(stdout, x); cout << endl;
+//    cout << "i*order+r=x="; BN_print_fp(stdout, x); cout << endl;
 
     if ((R = EC_POINT_new(group)) == NULL) { ret = -7; goto err; }
     
     if (!EC_POINT_set_compressed_coordinates_GFp(group, R, x, recid % 2, ctx)) { ret=-8; goto err; }
-    cout << "R: (X="; BN_print_fp(stdout,&R->X); cout << ",Y="; BN_print_fp(stdout,&R->Y); cout << ",Z="; BN_print_fp(stdout,&R->Z); cout << ")\n";
+//    cout << "R: (X="; BN_print_fp(stdout,&R->X); cout << ",Y="; BN_print_fp(stdout,&R->Y); cout << ",Z="; BN_print_fp(stdout,&R->Z); cout << ")\n";
 
     if ((O = EC_POINT_new(group)) == NULL) { ret = -9; goto err; }
 
     if (!EC_POINT_mul(group, O, NULL, R, order, ctx)) { ret=-10; goto err; }
-    cout << "O: (X="; BN_print_fp(stdout,&O->X); cout << ",Y="; BN_print_fp(stdout,&O->Y); cout << ",Z="; BN_print_fp(stdout,&O->Z); cout << ")\n";
+//    cout << "O: (X="; BN_print_fp(stdout,&O->X); cout << ",Y="; BN_print_fp(stdout,&O->Y); cout << ",Z="; BN_print_fp(stdout,&O->Z); cout << ")\n";
     
     if (!EC_POINT_is_at_infinity(group, O)) { ret = 0; goto err; }
     
@@ -128,26 +128,26 @@ int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const u
     n = BN_num_bits(order);
     e = BN_CTX_get(ctx);
     if (!BN_bin2bn(msg, msglen, e)) { ret=-14; goto err; }
-    cout << "key recovery: n=" << n << " msglen=" << (8*msglen) << endl;
+//    cout << "key recovery: n=" << n << " msglen=" << (8*msglen) << endl;
     if (8*msglen > n) BN_rshift(e, e, 8-(n & 7));
-    cout << "e="; BN_print_fp(stdout, e); cout << endl;
+//    cout << "e="; BN_print_fp(stdout, e); cout << endl;
     zero = BN_CTX_get(ctx);
     if (!BN_zero(zero)) { ret=-21; goto err; }
     if (!BN_mod_sub(e, zero, e, order, ctx)) { ret=-15; goto err; }
-    cout << "-e="; BN_print_fp(stdout, e); cout << endl;
+//    cout << "-e="; BN_print_fp(stdout, e); cout << endl;
     
     
     rr = BN_CTX_get(ctx);
     if (!BN_mod_inverse(rr, ecsig->r, order, ctx)) { ret=-16; goto err; }
     sor = BN_CTX_get(ctx);
     if (!BN_mod_mul(sor, ecsig->s, rr, order, ctx)) { ret=-17; goto err; }
-    cout << "s/r="; BN_print_fp(stdout, sor); cout << endl;
+//    cout << "s/r="; BN_print_fp(stdout, sor); cout << endl;
     eor = BN_CTX_get(ctx);
     if (!BN_mod_mul(eor, e, rr, order, ctx)) { ret=-18; goto err; }
-    cout << "-e/r="; BN_print_fp(stdout, eor); cout << endl;
+//    cout << "-e/r="; BN_print_fp(stdout, eor); cout << endl;
 
     if (!EC_POINT_mul(group, Q, eor, R, sor, ctx)) { ret=-19; goto err; }
-    cout << "Q: (X="; BN_print_fp(stdout,&Q->X); cout << ",Y="; BN_print_fp(stdout,&Q->Y); cout << ",Z="; BN_print_fp(stdout,&Q->Z); cout << ")\n";
+//    cout << "Q: (X="; BN_print_fp(stdout,&Q->X); cout << ",Y="; BN_print_fp(stdout,&Q->Y); cout << ",Z="; BN_print_fp(stdout,&Q->Z); cout << ")\n";
 
     if (!EC_KEY_set_public_key(eckey, Q)) { ret=-20; goto err; }
     
@@ -277,7 +277,49 @@ public:
         memcpy(&vchSig[0], pchSig, nSize);
         return true;
     }
+    
+    bool CompactSign(uint256 hash, vector<unsigned char>& vchSig)
+    {
+        bool fOk = false;
+        ECDSA_SIG *sig = ECDSA_do_sign((unsigned char*)&hash, sizeof(hash), pkey);
+        vchSig.clear();
+        vchSig.resize(65,0);
+        if (sig==NULL)
+            return false;
+        int nBitsR = BN_num_bits(sig->r);
+        int nBitsS = BN_num_bits(sig->s);
+        if (nBitsR <= 256 && nBitsS <= 256)
+        {
+            int nRecId = -1;
+            for (int i=0; i<4; i++)
+            {
+                CKey keyRec;
+                keyRec.fSet = true;
+                if (ECDSA_SIG_recover_key(keyRec.pkey, sig, (unsigned char*)&hash, sizeof(hash), i) == 1)
+                    if (keyRec.GetPubKey() == this->GetPubKey())
+                    {
+                        nRecId = i;
+                        break;
+                    }
+            }
+            
+            if (nRecId == -1)
+                throw key_error("CKEy::SignCompact() : unable to construct recoverable key");
+            
+            vchSig[0] = nRecId+27;
+            BN_bn2bin(sig->r,&vchSig[33-(nBitsR+7)/8]);
+            BN_bn2bin(sig->s,&vchSig[65-(nBitsS+7)/8]);
+            fOk = true;
+        }
+        ECDSA_SIG_free(sig);
+        return fOk;
+    }
 
+    bool FromCompactSignature(uint256 hash, const vector<unsigned char>& vchSig)
+    {
+        return false;
+    }
+    
     bool Verify(uint256 hash, const vector<unsigned char>& vchSig)
     {
         // -1 = error, 0 = bad sig, 1 = good
