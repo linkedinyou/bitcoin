@@ -76,7 +76,7 @@ err:
     return(ok);
 }
 
-int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned char *msg, int msglen, int recid)
+int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned char *msg, int msglen, int recid, int check)
 {
     if (!eckey) return 0;
 
@@ -107,7 +107,8 @@ int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const u
     if (!BN_copy(x, order)) { ret=-4; goto err; }
     if (!BN_mul_word(x, i)) { ret=-5; goto err; }
 //    cout << "i*order="; BN_print_fp(stdout, x); cout << endl;
-    if (!BN_mod_add(x, x, ecsig->r, order, ctx)) { ret=-6; goto err; }
+//    if (!BN_mod_add(x, x, ecsig->r, order, ctx)) { ret=-6; goto err; }
+    if (!BN_add(x, x, ecsig->r)) { ret=-6; goto err; }
 //    cout << "i*order+r=x="; BN_print_fp(stdout, x); cout << endl;
 
     if ((R = EC_POINT_new(group)) == NULL) { ret = -7; goto err; }
@@ -115,17 +116,20 @@ int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const u
     if (!EC_POINT_set_compressed_coordinates_GFp(group, R, x, recid % 2, ctx)) { ret=-8; goto err; }
 //    cout << "R: (X="; BN_print_fp(stdout,&R->X); cout << ",Y="; BN_print_fp(stdout,&R->Y); cout << ",Z="; BN_print_fp(stdout,&R->Z); cout << ")\n";
 
-    if ((O = EC_POINT_new(group)) == NULL) { ret = -9; goto err; }
+    if (check)
+    {
+        if ((O = EC_POINT_new(group)) == NULL) { ret = -9; goto err; }
 
-    if (!EC_POINT_mul(group, O, NULL, R, order, ctx)) { ret=-10; goto err; }
+        if (!EC_POINT_mul(group, O, NULL, R, order, ctx)) { ret=-10; goto err; }
 //    cout << "O: (X="; BN_print_fp(stdout,&O->X); cout << ",Y="; BN_print_fp(stdout,&O->Y); cout << ",Z="; BN_print_fp(stdout,&O->Z); cout << ")\n";
     
-    if (!EC_POINT_is_at_infinity(group, O)) { ret = 0; goto err; }
+        if (!EC_POINT_is_at_infinity(group, O)) { ret = 0; goto err; }
+    }
     
 //    if (recid & 1) if (!EC_POINT_invert(group, R, ctx)) { ret=-12; goto err; }
     
     if ((Q = EC_POINT_new(group)) == NULL) { ret = -13; goto err; }
-    n = BN_num_bits(order);
+    n = EC_GROUP_get_degree(group);
     e = BN_CTX_get(ctx);
     if (!BN_bin2bn(msg, msglen, e)) { ret=-14; goto err; }
 //    cout << "key recovery: n=" << n << " msglen=" << (8*msglen) << endl;
@@ -295,7 +299,7 @@ public:
             {
                 CKey keyRec;
                 keyRec.fSet = true;
-                if (ECDSA_SIG_recover_key(keyRec.pkey, sig, (unsigned char*)&hash, sizeof(hash), i) == 1)
+                if (ECDSA_SIG_recover_key(keyRec.pkey, sig, (unsigned char*)&hash, sizeof(hash), i, 1) == 1)
                     if (keyRec.GetPubKey() == this->GetPubKey())
                     {
                         nRecId = i;
@@ -317,14 +321,36 @@ public:
 
     bool FromCompactSignature(uint256 hash, const vector<unsigned char>& vchSig)
     {
+        if (vchSig.size() != 65)
+            return false;
+        if (vchSig[0]<27 || vchSig[0]>=31)
+            return false;
+        ECDSA_SIG *sig = ECDSA_SIG_new();
+        BN_bin2bn(&vchSig[1],32,sig->r);
+        BN_bin2bn(&vchSig[33],32,sig->s);
+
+        EC_KEY_free(pkey);
+        pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
+        if (ECDSA_SIG_recover_key(pkey, sig, (unsigned char*)&hash, sizeof(hash), vchSig[0] - 27, 0) == 1)
+        {
+            fSet = true;
+            ECDSA_SIG_free(sig);
+            return true;
+        }
         return false;
     }
     
     bool Verify(uint256 hash, const vector<unsigned char>& vchSig)
     {
         // -1 = error, 0 = bad sig, 1 = good
-        if (ECDSA_verify(0, (unsigned char*)&hash, sizeof(hash), &vchSig[0], vchSig.size(), pkey) != 1)
-            return false;
+        unsigned int nStart = GetTimeMillis();
+        for (int k=0; k<10000; k++)
+        {
+            if (ECDSA_verify(0, (unsigned char*)&hash, sizeof(hash), &vchSig[0], vchSig.size(), pkey) != 1)
+                return false;
+        }
+        nStart = GetTimeMillis() - nStart;
+        cout << "Verification of 10000 signatures took " << strprintf("%15"PRI64d"ms\n", nStart) << endl;
         cout << "Verification of signature: recid=" << RecoverPubKey(hash, vchSig) << endl;
         return true;
     }
@@ -336,19 +362,38 @@ public:
 	const unsigned char *pvchSig = &vchSig[0];
 	d2i_ECDSA_SIG(&sig, &pvchSig, vchSig.size());
 	key.fSet = true;
+        vector<unsigned char> vchCSig;
+        vchCSig.resize(65,0);
+        int nRet = -1;
 	for (int i = 0; i<4; i++)
 	{
-	    int ret = ECDSA_SIG_recover_key(key.pkey, sig, (unsigned char*)&hash, sizeof(hash), i);
-	    cout << "try " << i << ": ret=" << ret << endl;
+	    int ret = ECDSA_SIG_recover_key(key.pkey, sig, (unsigned char*)&hash, sizeof(hash), i, 1);
 	    if (ret==1)
-	    {
-		cout << "real pubkey: " << HexNumStr(this->GetPubKey()) << endl;
-		cout << "rec. pubkey: " << HexNumStr(key.GetPubKey()) << endl;
 	        if (key.GetPubKey() == this->GetPubKey())
-	            return i;
-	    }
+	            nRet = i;
 	}
-        return -1;
+        vchCSig[0] = 27+nRet;
+        int nBitsR = BN_num_bits(sig->r);
+        int nBitsS = BN_num_bits(sig->s);
+        BN_bn2bin(sig->r,&vchCSig[33-(nBitsR+7)/8]);
+        BN_bn2bin(sig->s,&vchCSig[65-(nBitsS+7)/8]);
+
+        unsigned int nStart = GetTimeMillis();
+        for (int k=0; k<10000; k++)
+        {
+            if (key.FromCompactSignature(hash, vchCSig))
+            {
+/*                if (key.GetPubKey() != this->GetPubKey())
+                {
+                    cout << "UNABLE TO RECOVER PUBLIC KEY FROM COMPACT SIGNATURE " << EncodeBase58Check(vchCSig) << endl;
+                    return false;
+                } */
+            }
+        }
+        nStart = GetTimeMillis() - nStart;
+        cout << "succesfully recoved key using compact signature " << EncodeBase58Check(vchCSig) << endl;
+        cout << "Recovery of 10000 keys took " << strprintf("%15"PRI64d"ms\n", nStart) << endl;
+        return nRet;
     }
 
     static bool Sign(const CPrivKey& vchPrivKey, uint256 hash, vector<unsigned char>& vchSig)
