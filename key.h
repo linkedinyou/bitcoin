@@ -26,6 +26,8 @@
 // see www.keylength.com
 // script supports up to 75 for single byte push
 
+#define LOOPSIZE 10000
+
 struct ec_point_st {
 const EC_METHOD *meth;
 /* All members except 'meth' are handled by the method functions,
@@ -76,17 +78,19 @@ err:
     return(ok);
 }
 
-int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned char *msg, int msglen, int recid, int check)
+int static inline ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned char *msg, int msglen, int recid, int check)
 {
     if (!eckey) return 0;
 
     int ret = 0;
     BN_CTX *ctx = NULL;
+    
     BIGNUM *x = NULL;
     BIGNUM *e = NULL;
     BIGNUM *order = NULL;
     BIGNUM *sor = NULL;
     BIGNUM *eor = NULL;
+    BIGNUM *field = NULL;
     EC_POINT *R = NULL;
     EC_POINT *O = NULL;
     EC_POINT *Q = NULL;
@@ -110,6 +114,10 @@ int static inline ECDSA_SIG_recover_key(EC_KEY *eckey, ECDSA_SIG *ecsig, const u
 //    if (!BN_mod_add(x, x, ecsig->r, order, ctx)) { ret=-6; goto err; }
     if (!BN_add(x, x, ecsig->r)) { ret=-6; goto err; }
 //    cout << "i*order+r=x="; BN_print_fp(stdout, x); cout << endl;
+
+    field = BN_CTX_get(ctx);
+    if (!EC_GROUP_get_curve_GFp(group, field, NULL, NULL, ctx));
+    if (BN_cmp(x, field) >= 0) { ret=-22; goto err; }
 
     if ((R = EC_POINT_new(group)) == NULL) { ret = -7; goto err; }
     
@@ -299,7 +307,7 @@ public:
             {
                 CKey keyRec;
                 keyRec.fSet = true;
-                if (ECDSA_SIG_recover_key(keyRec.pkey, sig, (unsigned char*)&hash, sizeof(hash), i, 1) == 1)
+                if (ECDSA_SIG_recover_key_GFp(keyRec.pkey, sig, (unsigned char*)&hash, sizeof(hash), i, 1) == 1)
                     if (keyRec.GetPubKey() == this->GetPubKey())
                     {
                         nRecId = i;
@@ -331,7 +339,7 @@ public:
 
         EC_KEY_free(pkey);
         pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
-        if (ECDSA_SIG_recover_key(pkey, sig, (unsigned char*)&hash, sizeof(hash), vchSig[0] - 27, 0) == 1)
+        if (ECDSA_SIG_recover_key_GFp(pkey, sig, (unsigned char*)&hash, sizeof(hash), vchSig[0] - 27, 0) == 1)
         {
             fSet = true;
             ECDSA_SIG_free(sig);
@@ -344,19 +352,20 @@ public:
     {
         // -1 = error, 0 = bad sig, 1 = good
         unsigned int nStart = GetTimeMillis();
-        for (int k=0; k<10000; k++)
+        for (int k=0; k<LOOPSIZE; k++)
         {
             if (ECDSA_verify(0, (unsigned char*)&hash, sizeof(hash), &vchSig[0], vchSig.size(), pkey) != 1)
                 return false;
         }
         nStart = GetTimeMillis() - nStart;
-        cout << "Verification of 10000 signatures took " << strprintf("%15"PRI64d"ms\n", nStart) << endl;
+        cout << "Verification of " << LOOPSIZE << " signatures took " << strprintf("%15"PRI64d"ms", nStart) << endl;
         cout << "Verification of signature: recid=" << RecoverPubKey(hash, vchSig) << endl;
         return true;
     }
     
     int RecoverPubKey(uint256 hash, const vector<unsigned char>& vchSig)
     {
+        static uint256 testhash=uint256("bb07b6c133446afe1894f3758d315c928f4d5960195571bfcd271e3d81909d9c");
         CKey key;
 	ECDSA_SIG *sig = ECDSA_SIG_new();
 	const unsigned char *pvchSig = &vchSig[0];
@@ -367,7 +376,7 @@ public:
         int nRet = -1;
 	for (int i = 0; i<4; i++)
 	{
-	    int ret = ECDSA_SIG_recover_key(key.pkey, sig, (unsigned char*)&hash, sizeof(hash), i, 1);
+	    int ret = ECDSA_SIG_recover_key_GFp(key.pkey, sig, (unsigned char*)&hash, sizeof(hash), i, 1);
 	    if (ret==1)
 	        if (key.GetPubKey() == this->GetPubKey())
 	            nRet = i;
@@ -379,20 +388,44 @@ public:
         BN_bn2bin(sig->s,&vchCSig[65-(nBitsS+7)/8]);
 
         unsigned int nStart = GetTimeMillis();
-        for (int k=0; k<10000; k++)
+        for (int k=0; k<LOOPSIZE; k++)
         {
-            if (key.FromCompactSignature(hash, vchCSig))
+            if (!key.FromCompactSignature(hash, vchCSig))
             {
-/*                if (key.GetPubKey() != this->GetPubKey())
-                {
-                    cout << "UNABLE TO RECOVER PUBLIC KEY FROM COMPACT SIGNATURE " << EncodeBase58Check(vchCSig) << endl;
-                    return false;
-                } */
+                cout << "UNABLE TO RECOVER PUBLIC KEY FROM COMPACT SIGNATURE " << EncodeBase58Check(vchCSig) << endl;
+                return false;
             }
         }
         nStart = GetTimeMillis() - nStart;
-        cout << "succesfully recoved key using compact signature " << EncodeBase58Check(vchCSig) << endl;
-        cout << "Recovery of 10000 keys took " << strprintf("%15"PRI64d"ms\n", nStart) << endl;
+        if (key.GetPubKey() == this->GetPubKey())
+        {
+            cout << "succesfully recoved key using compact signature " << EncodeBase58Check(vchCSig) << endl;
+        }
+        else
+        {
+            cout << "FAILURE... incorrectly recovered key" << endl;
+        }
+        cout << "Recovery of " << LOOPSIZE << " keys took " << strprintf("%15"PRI64d"ms", nStart) << endl;
+        
+        for (int idx=0; idx<4; idx++)
+        {
+            CKey ekey;
+            int res = ECDSA_SIG_recover_key_GFp(ekey.pkey, sig, (unsigned char*)&testhash, sizeof(testhash), idx, 0);
+            if (res == 1)
+            {
+                CKey ekey2;
+                int res2 = ECDSA_SIG_recover_key_GFp(ekey2.pkey, sig, (unsigned char*)&testhash, sizeof(testhash), idx, 1);
+                if (res2 != 1)
+                    cout << "WOAH! recovery from random digest works, but not when checking..." << endl;
+                int res3 = ECDSA_do_verify((unsigned char*)&testhash, sizeof(testhash), sig, ekey.pkey);
+                if (res3 != 1)
+                    cout << "WOAH! recovery from random digest works, but signature is invalid" << endl;
+                if (res2 == 1 && res3 == 1)
+                    cout << "nice, key recovered from random digest is valid" << endl;
+            }
+            else
+                cout << "... cannot recover from random digest possible" << endl;
+        }
         return nRet;
     }
 
